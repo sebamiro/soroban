@@ -148,10 +148,10 @@ func (c Client) GetHealth() (*GetHealthResult, error) {
 
 type GetLedgerEntriesResult struct {
 	LatestLedger int64             `json:"latestLedger"`
-	Entries      []GetLedgerEntrie `json:"entries"`
+	Entries      []GetLedgerEntry `json:"entries"`
 }
 
-type GetLedgerEntrie struct {
+type GetLedgerEntry struct {
 	Key                   string `json:"key"`
 	Xdr                   string `json:"xdr"`
 	LastModifiedLedgerSeq int64  `json:"lastModifiedLedgerSeq"`
