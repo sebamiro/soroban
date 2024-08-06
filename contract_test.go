@@ -43,9 +43,9 @@ var (
 )
 
 func TestMain(t *testing.M) {
-	sorobanClient.URL = TestNetwork
-	sorobanClient.PassPhrase = TestPassphrase
-	sorobanClient.FriendbotURL = TestFriendbot
+	sorobanClient.URL = LocalNetwork
+	sorobanClient.PassPhrase = LocalPassphrase
+	sorobanClient.FriendbotURL = LocalFriendbot
 	contractWasm, _ = os.ReadFile(HelloWorldContract)
 	t.Run()
 }
@@ -157,7 +157,7 @@ func TestInvokeContractFunction(t *testing.T) {
 	res, err := contract.Invoke().
 		Function("hello").
 		Symbol("World").
-		Send()
+		RestoreAndSend()
 	if err != nil {
 		t.Fatal(err)
 	}

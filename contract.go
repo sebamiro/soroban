@@ -3,6 +3,7 @@ package soroban
 import (
 	"crypto/sha256"
 	"errors"
+	"time"
 
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/txnbuild"
@@ -32,15 +33,16 @@ type (
 )
 
 const (
-	ErrorRequiredSource         = "Source Address is required"
-	ErrorRequiredWasm           = "Wasm is required"
-	ErrorRequiredWasmHash       = "WasmHash is required"
-	ErrorRequiredClient         = "Client is required"
-	ErrorRequiredKeyPair        = "Key pair is required"
-	ErrorRequiredSalt           = "Salt is required"
-	ErrorWasmCodeNeedsRestore   = "Wasm code has no ttl, requires a restore"
-	ErrorContractNeedsRestore   = "Contract has no ttl, requires a restore"
-	ErrorInvokeRequiresFunction = "Function is required"
+	ErrorRequiredSource           = "Source Address is required"
+	ErrorRequiredWasm             = "Wasm is required"
+	ErrorRequiredWasmHash         = "WasmHash is required"
+	ErrorRequiredClient           = "Client is required"
+	ErrorRequiredKeyPair          = "Key pair is required"
+	ErrorRequiredSalt             = "Salt is required"
+	ErrorWasmCodeNeedsRestore     = "Wasm code has no ttl, requires a restore"
+	ErrorContractNeedsRestore     = "Contract has no ttl, requires a restore"
+	ErrorContractDataNeedsRestore = "Contract data has no ttl, requires a restore"
+	ErrorInvokeRequiresFunction   = "Function is required"
 )
 
 // NewContract returns a Contract builder that can install, deploy and invoke
@@ -439,10 +441,34 @@ func (c *invokeBuilder) Send() (*SendTransactionResult, error) {
 	if !isAlive {
 		return nil, errors.New(ErrorContractNeedsRestore)
 	}
-	return c.contract.invoke(c.build)
+	return c.contract.invoke(c.build, false)
 }
 
-func (c *Contract) invoke(build *invokeBuild) (*SendTransactionResult, error) {
+// RestoreAndSend if the contract has no ttl left, it will retore it before sending the transaction.
+// The result status can be PENDING, DUPLICATE, TRY_AGAIN_LATER, ERROR
+// It will NOT check if it was accepted, it will need to be check
+// using RPC call to getTransaction with the transaction hash
+//
+//	Requires wasm, client, sourceAccount, keyPair, salt, function
+func (c *invokeBuilder) RestoreAndSend() (*SendTransactionResult, error) {
+	if c.build.function == "" {
+		return nil, errors.New(ErrorInvokeRequiresFunction)
+	}
+	isAlive, err := c.contract.IsAlive()
+	if err != nil {
+		return nil, err
+	}
+	if !isAlive {
+		res, err := c.contract.Restore()
+		if err != nil {
+			return nil, err
+		}
+		c.contract.client.waitCompletedTransaction(res.Hash)
+	}
+	return c.contract.invoke(c.build, true)
+}
+
+func (c *Contract) invoke(build *invokeBuild, restore bool) (*SendTransactionResult, error) {
 	contractAddress, err := c.GetAddress()
 	if err != nil {
 		return nil, err
@@ -458,10 +484,41 @@ func (c *Contract) invoke(build *invokeBuild) (*SendTransactionResult, error) {
 		},
 		SourceAccount: c.source.GetAccountID(),
 	}
-	return c.simulateSubmitHostFunction(invokeHostFunctionOp)
+	transaction := NewTransctionBuilder().
+		Client(c.client).
+		SourceAccount(c.source).
+		Signer(c.kp).
+		Operation(&invokeHostFunctionOp).
+		TimeBounds(txnbuild.NewTimeout(30))
+	res, err := transaction.Simulate()
+	if err != nil {
+		return nil, err
+	}
+	if res.RestorePreamble.MinResourceFee != 0 {
+		if !restore {
+			return nil, errors.New(ErrorContractDataNeedsRestore)
+		}
+		var transactionData xdr.SorobanTransactionData
+		err := xdr.SafeUnmarshalBase64(res.TransactionData, &transactionData)
+		if err != nil {
+			return nil, err
+		}
+		t := NewTransctionBuilder().
+			Client(c.client).
+			SourceAccount(c.source).
+			Signer(c.kp).
+			Operation(&txnbuild.RestoreFootprint{SourceAccount: c.source.GetAccountID()}).
+			TimeBounds(txnbuild.NewTimeout(30)).
+			SorobanData(transactionData).
+			BaseFee(res.RestorePreamble.MinResourceFee + txnbuild.MinBaseFee)
+		res, err := t.Send()
+		if err != nil {
+			return nil, err
+		}
+		c.client.waitCompletedTransaction(res.Hash)
+	}
+	return transaction.Send()
 }
-
-/// ---------------------------------------
 
 func (c *Contract) simulateSubmitHostFunction(op txnbuild.InvokeHostFunction) (*SendTransactionResult, error) {
 	transaction := NewTransctionBuilder().
@@ -470,37 +527,59 @@ func (c *Contract) simulateSubmitHostFunction(op txnbuild.InvokeHostFunction) (*
 		Signer(c.kp).
 		Operation(&op).
 		TimeBounds(txnbuild.NewTimeout(30))
-
-	res, err := transaction.Simulate()
+	_, err := transaction.Simulate()
 	if err != nil {
 		return nil, err
 	}
-	var auth []xdr.SorobanAuthorizationEntry
-	for _, res := range res.Results {
-		var decodedRes xdr.ScVal
-		err := xdr.SafeUnmarshalBase64(res.XDR, &decodedRes)
+	return transaction.Send()
+}
+
+// Restore restores the contract wasm code and instace if neededd
+// Docs: https://developers.stellar.org/docs/learn/encyclopedia/storage/state-archival
+//
+//	Requires wasm, client, sourceAccount, keyPair, salt, function
+func (c *Contract) Restore() (*SendTransactionResult, error) {
+	var readWrite []xdr.LedgerKey
+	codeKey, err := c.GetCodeKey()
+	if err != nil {
+		return nil, err
+	}
+	readWrite = append(readWrite, codeKey)
+	instanceKey, err := c.GetFootprint()
+	if err != nil {
+		return nil, err
+	}
+	readWrite = append(readWrite, instanceKey)
+	transaction := NewTransctionBuilder().
+		Client(c.client).
+		SourceAccount(c.source).
+		Signer(c.kp).
+		Operation(&txnbuild.RestoreFootprint{SourceAccount: c.source.GetAccountID()}).
+		TimeBounds(txnbuild.NewTimeout(30)).
+		SorobanData(xdr.SorobanTransactionData{
+			Resources: xdr.SorobanResources{
+				Footprint: xdr.LedgerFootprint{
+					ReadWrite: readWrite,
+				},
+			},
+		})
+	_, err = transaction.Simulate()
+	if err != nil {
+		return nil, err
+	}
+	return transaction.Send()
+}
+
+func (c *Client) waitCompletedTransaction(hash string) (*GetTransactionResult, error) {
+	for i := 0; i < 5; i++ {
+		res, err := c.GetTransaction(hash)
 		if err != nil {
 			return nil, err
 		}
-		for _, authBase64 := range res.Auth {
-			var authEntry xdr.SorobanAuthorizationEntry
-			err = xdr.SafeUnmarshalBase64(authBase64, &authEntry)
-			if err != nil {
-				return nil, err
-			}
-			auth = append(auth, authEntry)
+		if res.Status != "NOT_FOUND" {
+			return res, nil
 		}
+		time.Sleep(time.Duration(i) * 2 * time.Second)
 	}
-	var transactionData xdr.SorobanTransactionData
-	err = xdr.SafeUnmarshalBase64(res.TransactionData, &transactionData)
-	if err != nil {
-		return nil, err
-	}
-
-	transaction = transaction.
-		BaseFee(res.MinResourceFee + txnbuild.MinBaseFee).
-		SorobanData(transactionData).
-		Authorization(auth)
-
-	return transaction.Send()
+	return nil, nil
 }
