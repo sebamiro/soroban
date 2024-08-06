@@ -125,16 +125,26 @@ func (t *Transaction) Authorization(auth []xdr.SorobanAuthorizationEntry) *Trans
 // Authorizationa sets Soroban Authorization. Its only possible if there is only one
 // InvokeFunctionOperation, else does nothing
 func (t *Transaction) SorobanData(data xdr.SorobanTransactionData) *Transaction {
-	op, ok := t.build.operations[0].(*txnbuild.InvokeHostFunction)
-	if ok {
-		op.Ext = xdr.TransactionExt{
-			V:           1,
-			SorobanData: &data,
+	if len(t.build.operations) > 0 {
+		op := t.build.operations[0]
+		switch op.(type) {
+		case *txnbuild.InvokeHostFunction:
+			op.(*txnbuild.InvokeHostFunction).Ext = xdr.TransactionExt{
+				V:           1,
+				SorobanData: &data,
+			}
+		case *txnbuild.RestoreFootprint:
+			op.(*txnbuild.RestoreFootprint).Ext = xdr.TransactionExt{
+				V:           1,
+				SorobanData: &data,
+			}
 		}
 	}
 	return t
 }
 
+// Simulate simulates an prepares the transaction adding authorization, transactionData,
+// and fee
 func (t *Transaction) Simulate() (*SimulateTransactionResult, error) {
 	increase := t.build.incrementSequenceNum
 	t.build.incrementSequenceNum = false
@@ -143,7 +153,36 @@ func (t *Transaction) Simulate() (*SimulateTransactionResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return t.client.SimulateTransaction(tx)
+	res, err := t.client.SimulateTransaction(tx)
+	if err != nil {
+		return nil, err
+	}
+	var auth []xdr.SorobanAuthorizationEntry
+	for _, res := range res.Results {
+		var decodedRes xdr.ScVal
+		err := xdr.SafeUnmarshalBase64(res.XDR, &decodedRes)
+		if err != nil {
+			return nil, err
+		}
+		for _, authBase64 := range res.Auth {
+			var authEntry xdr.SorobanAuthorizationEntry
+			err = xdr.SafeUnmarshalBase64(authBase64, &authEntry)
+			if err != nil {
+				return nil, err
+			}
+			auth = append(auth, authEntry)
+		}
+	}
+	var transactionData xdr.SorobanTransactionData
+	err = xdr.SafeUnmarshalBase64(res.TransactionData, &transactionData)
+	if err != nil {
+		return nil, err
+	}
+	t = t.
+		BaseFee(res.MinResourceFee + txnbuild.MinBaseFee).
+		SorobanData(transactionData).
+		Authorization(auth)
+	return res, nil
 }
 
 func (t *Transaction) Send() (*SendTransactionResult, error) {
