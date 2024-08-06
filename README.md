@@ -1,2 +1,2 @@
 # soroban
-golang dependency for soroban integration
+Stellar Go SDK with Soroban RPC
