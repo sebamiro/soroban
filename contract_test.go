@@ -81,7 +81,7 @@ func TestInstallContract(t *testing.T) {
 
 func TestCreateContract(t *testing.T) {
 	pair, _ := keypair.Random()
-	err := sorobanClient.Fund(pair.Address())
+	_, err := sorobanClient.Fund(pair.Address())
 	if err != nil {
 		t.Fatal(err)
 	}

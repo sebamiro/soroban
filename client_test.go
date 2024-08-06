@@ -17,7 +17,7 @@ const (
 	SEED = "SDBIZIYGYODMURTQIGFRK2NRIVOVOOS7DE5HGYXOBRTN3GA7G6QZX672"
 )
 
-var client = soroban.Client{Client: rpc.Client{URL: LOCAL_NETWORK}, PassPhrase: LOCAL_PASSPHRASE}
+var client = soroban.Client{Client: rpc.Client{URL: LocalNetwork}, PassPhrase: LocalPassphrase}
 
 func TestSimulateTransaction(t *testing.T) {
 	contractid := []byte("CAOCKSQN7D2XXP3XEYYPB3F6SGMYUNTBYSDCCML6QJYJ75H2KNZ3I23Z")
