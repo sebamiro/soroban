@@ -152,25 +152,22 @@ func (c Client) GetAccount(publicKey string) (account *Account, err error) {
 
 // Fund funds the publicKey recived. It only works with test networks.
 // If FriendbotURL is not set, it will get it from the network.
-func (c *Client) Fund(publicKey string) error {
+func (c *Client) Fund(publicKey string) (*http.Response, error) {
 	if c.FriendbotURL == "" {
 		network, err := c.GetNetwork()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		c.FriendbotURL = network.FriendbotURL
 	}
 	friendbotURL := fmt.Sprintf("%s?addr=%s", c.FriendbotURL, publicKey)
 	req, err := http.NewRequest("GET", friendbotURL, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if res.StatusCode != http.StatusOK {
-		return errors.New("Bad status code:" + res.Status)
-	}
-	return nil
+	return res, nil
 }
